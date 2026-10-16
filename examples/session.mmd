@@ -1,0 +1,28 @@
+flowchart TB
+  B["browser<br/>operator, local or remote"]
+
+  subgraph DMS["DmsCam: thin C++ service, composing the shared core"]
+    SC["session controller<br/>plan, purpose, readiness, calibration"]
+    WF["workflow<br/>state machine, trails, 3D target, gaze"]
+  end
+
+  DISP["display backends (IDisplay)<br/>FAVRA phones, in-car screen, LED, VR"]
+
+  NM["prisma capture node: mocap and sensors<br/>metadata_api plugins:<br/>OptiTrack, Plux, Polar, Tobii Pro, audio"]
+  NV["prisma capture node: video<br/>camera_sdk plugins:<br/>cameras, Orbbec, SmartIR<br/>(Windows / Linux / TDA4x)"]
+
+  CLK(["network clock<br/>hw fsync where present"])
+  PXS[("PXS container per take<br/>every stream on one clock,<br/>manifest, embedded calibration")]
+
+  B <-->|"DmsCam control API,<br/>state, previews"| SC
+  SC --- WF
+  WF -->|"display commands"| DISP
+  DISP -->|"chaser, trigger"| WF
+  SC -->|"capture-node<br/>control API"| NM
+  SC -->|"capture-node<br/>control API"| NV
+  NM -->|"head pose"| WF
+  WF -->|"workflow events<br/>(producer stream)"| NM
+  CLK -.-> NM
+  CLK -.-> NV
+  NM --> PXS
+  NV --> PXS

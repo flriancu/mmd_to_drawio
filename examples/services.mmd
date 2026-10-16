@@ -1,0 +1,37 @@
+flowchart TB
+  subgraph tobii_in["Tobii"]
+    REG[("ICMDB registry<br/>plans, scenarios, stations,<br/>devices, calibration bundles")]
+    PKG["session-package"]
+  end
+
+  subgraph site["Site: orchestrated by DmsCam (partner or Tobii)"]
+    PREP["prepare<br/>plan details, zones, trails"]
+    CAL["calibrate<br/>guided, octodp solvers"]
+    REC["record<br/>(level 2)"]
+    SELF["export self-check<br/>(optional)"]
+    HAND["hand-off package"]
+  end
+
+  subgraph tobii_out["Tobii: event-driven services"]
+    ING["ingest"]
+    EXP["export<br/>rise + GazeCore"]
+    LOAD["load"]
+    QA["QA<br/>2 validators + aligner"]
+    DB[("ICMDB")]
+  end
+
+  DS["dataset builders"]
+
+  REG --> PKG
+  PKG -.->|"partner cut:<br/>portable package"| PREP
+  PKG -.-> CAL
+  PREP -->|"completed plan"| REC
+  CAL -->|"calibration bundle"| REC
+  REC -.-> SELF
+  REC -->|"PXS container + manifest"| HAND
+  HAND -.->|"partner cut:<br/>drop location / disk"| ING
+  ING --> EXP --> LOAD --> QA
+  ING -->|"returned calibrations"| DB
+  LOAD --> DB
+  QA -->|"certificates"| DB
+  DB --> DS
