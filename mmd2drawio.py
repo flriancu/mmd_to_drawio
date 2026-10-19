@@ -20,7 +20,9 @@ Colours: Mermaid's `classDef name fill:..,stroke:..,color:..,stroke-width:..,
 stroke-dasharray:..` and `class A,B name` style nodes, in both tools. Two comments
 Mermaid ignores extend them in draw.io: `%% drawio-style name <draw.io style>`
 adds raw draw.io style to a class (a hatched fill, say, which Mermaid cannot
-draw), and `%% edge-class "edge label" name` paints every label with that text
+draw), `%% drawio-underlay name <colour>` draws a solid shape of that colour
+beneath the class's nodes, so a hatched fill's gaps show it instead of what is
+behind, and `%% edge-class "edge label" name` paints every label with that text
 in the class's fill and stroke.
 
 --font-size lays the diagram out for that font size, in pixels, and writes every
@@ -45,6 +47,7 @@ CLASS_RE = re.compile(r'^\s*class\s+([\w,\s]+?)\s+(\w+)\s*;?\s*$')
 EDGE_LINK_RE = re.compile(r'^%%\s*link\s+"(.*?)"\s+"([^"]+)"\s*$')
 EDGE_CLASS_RE = re.compile(r'^%%\s*edge-class\s+"(.*?)"\s+(\w+)\s*$')
 DRAWIO_STYLE_RE = re.compile(r'^%%\s*drawio-style\s+(\w+)\s+(\S+)\s*$')
+DRAWIO_UNDERLAY_RE = re.compile(r'^%%\s*drawio-underlay\s+(\w+)\s+(#[0-9A-Fa-f]{6})\s*$')
 EDGE_OP = r'(<-->|-\.->|-->|---)'
 # Mermaid's classDef properties and the draw.io keys they become, for a node and
 # for an edge label.
@@ -82,6 +85,7 @@ class Diagram:
     edge_links: dict = field(default_factory=dict)     # edge label -> url
     classes: dict = field(default_factory=dict)        # class -> {Mermaid property: value}
     drawio_styles: dict = field(default_factory=dict)  # class -> raw draw.io style
+    underlays: dict = field(default_factory=dict)      # class -> colour drawn beneath its nodes
     node_classes: dict = field(default_factory=dict)   # id -> class
     edge_classes: dict = field(default_factory=dict)   # edge label -> class
 
@@ -112,6 +116,10 @@ def parse_mmd(text):
         m = DRAWIO_STYLE_RE.match(line)
         if m:
             d.drawio_styles[m.group(1)] = m.group(2).rstrip(";") + ";"
+            continue
+        m = DRAWIO_UNDERLAY_RE.match(line)
+        if m:
+            d.underlays[m.group(1)] = m.group(2)
             continue
         if not line or line.startswith(("flowchart", "graph", "%%")):
             continue
@@ -171,7 +179,7 @@ def parse_mmd(text):
     for nid, name in d.node_classes.items():
         if nid not in d.nodes and nid not in d.clusters:
             raise ValueError(f"class on unknown node: {nid}")
-    for name in list(d.node_classes.values()) + list(d.edge_classes.values()) + list(d.drawio_styles):
+    for name in list(d.node_classes.values()) + list(d.edge_classes.values()) + list(d.drawio_styles) + list(d.underlays):
         if name not in d.classes:
             raise ValueError(f"no classDef for class: {name}")
     return d
@@ -290,12 +298,18 @@ def build(mmd_text, svg, font_size=None):
 
     def cell(cid, value, style, x, y, w, h):
         ox, oy = origin(cid)
+        geometry = dict(x=f"{x - ox:.1f}", y=f"{y - oy:.1f}", width=f"{w:.1f}", height=f"{h:.1f}")
         name = d.node_classes.get(cid)
+        if name in d.underlays:
+            # Drawn first, so it sits beneath the node: same shape and place, no outline.
+            under = ET.SubElement(root, "mxCell", id=f"{cid}-underlay", value="",
+                                  style=style + f"fillColor={d.underlays[name]};strokeColor=none;",
+                                  vertex="1", parent=parent.get(cid, "1"))
+            ET.SubElement(under, "mxGeometry", **geometry, **{"as": "geometry"})
         if name:
             style += d.class_style(name, NODE_KEYS) + d.drawio_styles.get(name, "")
         c = element(cid, value, style, d.node_links.get(cid), vertex="1", parent=parent.get(cid, "1"))
-        ET.SubElement(c, "mxGeometry", x=f"{x - ox:.1f}", y=f"{y - oy:.1f}",
-                      width=f"{w:.1f}", height=f"{h:.1f}", **{"as": "geometry"})
+        ET.SubElement(c, "mxGeometry", **geometry, **{"as": "geometry"})
 
     # Containers first, outermost before inner, so children find their parent.
     def depth(cid):

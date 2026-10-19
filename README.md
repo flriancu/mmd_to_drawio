@@ -63,8 +63,10 @@ It covers flowcharts, which is what the documents using it need:
 - colours: `classDef name fill:#..,stroke:#..,color:#..,stroke-width:2px,stroke-dasharray:5 5`
   and `class A,B name`, as in Mermaid. Two comments extend them for draw.io:
   `%% drawio-style name <draw.io style>` adds raw draw.io style to a class, such as
-  a hatched fill Mermaid cannot draw (`fillStyle=hatch;fillWeight=10;hachureGap=24;`),
-  and `%% edge-class "edge label" name` paints every label with that text in the
+  a hatched fill Mermaid cannot draw (`fillStyle=hatch;fillWeight=6;hachureGap=12;`);
+  `%% drawio-underlay name #RRGGBB` draws a solid shape of that colour beneath the
+  class's nodes, so a hatched fill's gaps show it rather than what is behind; and
+  `%% edge-class "edge label" name` paints every label with that text in the
   class's fill (background) and stroke (border).
 
 A `click`, `class` or `%% edge-class` naming something that isn't there, or a class
