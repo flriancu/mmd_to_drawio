@@ -16,6 +16,13 @@ chains `A --> B --> C`. Links: Mermaid's `click A href "url"` for a node, and a
 `%% link "edge label" "url"` comment for every edge with that label, which
 Mermaid ignores.
 
+Colours: Mermaid's `classDef name fill:..,stroke:..,color:..,stroke-width:..,
+stroke-dasharray:..` and `class A,B name` style nodes, in both tools. Two comments
+Mermaid ignores extend them in draw.io: `%% drawio-style name <draw.io style>`
+adds raw draw.io style to a class (a hatched fill, say, which Mermaid cannot
+draw), and `%% edge-class "edge label" name` paints every label with that text
+in the class's fill and stroke.
+
 --font-size lays the diagram out for that font size, in pixels, and writes every
 label at it, so the boxes grow with the text instead of the text spilling out.
 """
@@ -27,13 +34,22 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from pathlib import Path
 
 NODE_RE = re.compile(r'^\s*(\w+)\s*(\[\("|\(\["|\[")(.*?)("\)\]|"\]\)|"\])\s*$')
 SUBGRAPH_RE = re.compile(r'^\s*subgraph\s+(\w+)\s*\["(.*?)"\]\s*$')
 CLICK_RE = re.compile(r'^\s*click\s+(\w+)\s+(?:href\s+)?"([^"]+)"')
+CLASSDEF_RE = re.compile(r'^\s*classDef\s+(\w+)\s+(.+?);?\s*$')
+CLASS_RE = re.compile(r'^\s*class\s+([\w,\s]+?)\s+(\w+)\s*;?\s*$')
 EDGE_LINK_RE = re.compile(r'^%%\s*link\s+"(.*?)"\s+"([^"]+)"\s*$')
+EDGE_CLASS_RE = re.compile(r'^%%\s*edge-class\s+"(.*?)"\s+(\w+)\s*$')
+DRAWIO_STYLE_RE = re.compile(r'^%%\s*drawio-style\s+(\w+)\s+(\S+)\s*$')
 EDGE_OP = r'(<-->|-\.->|-->|---)'
+# Mermaid's classDef properties and the draw.io keys they become, for a node and
+# for an edge label.
+NODE_KEYS = {"fill": "fillColor", "stroke": "strokeColor", "color": "fontColor", "stroke-width": "strokeWidth"}
+LABEL_KEYS = {"fill": "labelBackgroundColor", "stroke": "labelBorderColor", "color": "fontColor"}
 
 SHAPES = {
     '[("': "shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=12;",
@@ -55,27 +71,69 @@ ARROWS = {
 DEFAULT_SIZES = {"node": 13, "edge": 12}
 
 
+@dataclass
+class Diagram:
+    """What the .mmd source says, apart from the layout."""
+    nodes: dict = field(default_factory=dict)          # id -> (label, shape style)
+    clusters: dict = field(default_factory=dict)       # id -> label
+    edges: list = field(default_factory=list)          # (src, op, label, dst)
+    parent: dict = field(default_factory=dict)         # node or cluster id -> cluster id
+    node_links: dict = field(default_factory=dict)     # id -> url
+    edge_links: dict = field(default_factory=dict)     # edge label -> url
+    classes: dict = field(default_factory=dict)        # class -> {Mermaid property: value}
+    drawio_styles: dict = field(default_factory=dict)  # class -> raw draw.io style
+    node_classes: dict = field(default_factory=dict)   # id -> class
+    edge_classes: dict = field(default_factory=dict)   # edge label -> class
+
+    def class_style(self, name, keys):
+        """draw.io style for a class, mapped through keys (NODE_KEYS or LABEL_KEYS)."""
+        style = ""
+        for prop, value in self.classes[name].items():
+            if prop in keys:
+                style += f"{keys[prop]}={value.removesuffix('px')};"
+            elif prop == "stroke-dasharray" and keys is NODE_KEYS:
+                style += "dashed=1;"
+        return style
+
+
 def parse_mmd(text):
-    nodes, clusters, edges, parent = {}, {}, [], {}
-    node_links, edge_links = {}, {}
+    d = Diagram()
     stack = []
     for raw in text.splitlines():
         line = raw.strip()
         m = EDGE_LINK_RE.match(line)
         if m:
-            edge_links[m.group(1)] = m.group(2)
+            d.edge_links[m.group(1)] = m.group(2)
+            continue
+        m = EDGE_CLASS_RE.match(line)
+        if m:
+            d.edge_classes[m.group(1)] = m.group(2)
+            continue
+        m = DRAWIO_STYLE_RE.match(line)
+        if m:
+            d.drawio_styles[m.group(1)] = m.group(2).rstrip(";") + ";"
             continue
         if not line or line.startswith(("flowchart", "graph", "%%")):
             continue
         m = CLICK_RE.match(line)
         if m:
-            node_links[m.group(1)] = m.group(2)
+            d.node_links[m.group(1)] = m.group(2)
+            continue
+        m = CLASSDEF_RE.match(line)
+        if m:
+            props = (p.split(":", 1) for p in m.group(2).split(",") if ":" in p)
+            d.classes[m.group(1)] = {k.strip(): v.strip() for k, v in props}
+            continue
+        m = CLASS_RE.match(line)
+        if m:
+            for nid in re.split(r"[,\s]+", m.group(1).strip()):
+                d.node_classes[nid] = m.group(2)
             continue
         m = SUBGRAPH_RE.match(line)
         if m:
-            clusters[m.group(1)] = m.group(2)
+            d.clusters[m.group(1)] = m.group(2)
             if stack:
-                parent[m.group(1)] = stack[-1]
+                d.parent[m.group(1)] = stack[-1]
             stack.append(m.group(1))
             continue
         if line == "end":
@@ -83,9 +141,9 @@ def parse_mmd(text):
             continue
         m = NODE_RE.match(line)
         if m:
-            nodes[m.group(1)] = (m.group(3), SHAPES[m.group(2)])
+            d.nodes[m.group(1)] = (m.group(3), SHAPES[m.group(2)])
             if stack:
-                parent[m.group(1)] = stack[-1]
+                d.parent[m.group(1)] = stack[-1]
             continue
         # Edge line, possibly a chain: walk operator by operator.
         rest = line
@@ -99,18 +157,24 @@ def parse_mmd(text):
             if not m:
                 raise ValueError(f"cannot parse: {raw}")
             op, label, dst = m.group(1), m.group(2) or "", m.group(3)
-            edges.append((src, op, label, dst))
+            d.edges.append((src, op, label, dst))
             src, pos = dst, m.end()
 
-    # A link that names nothing is a typo, not a diagram without that link.
-    for nid in node_links:
-        if nid not in nodes and nid not in clusters:
+    # A link or a class that names nothing is a typo, not a diagram without it.
+    for nid in d.node_links:
+        if nid not in d.nodes and nid not in d.clusters:
             raise ValueError(f"click on unknown node: {nid}")
-    labels = {label for _, _, label, _ in edges}
-    for label in edge_links:
+    labels = {label for _, _, label, _ in d.edges}
+    for label in list(d.edge_links) + list(d.edge_classes):
         if label not in labels:
-            raise ValueError(f'link for an edge label no edge has: "{label}"')
-    return nodes, clusters, edges, parent, node_links, edge_links
+            raise ValueError(f'link or edge-class for an edge label no edge has: "{label}"')
+    for nid, name in d.node_classes.items():
+        if nid not in d.nodes and nid not in d.clusters:
+            raise ValueError(f"class on unknown node: {nid}")
+    for name in list(d.node_classes.values()) + list(d.edge_classes.values()) + list(d.drawio_styles):
+        if name not in d.classes:
+            raise ValueError(f"no classDef for class: {name}")
+    return d
 
 
 def render_svg(mmd_path, font_size=None):
@@ -199,7 +263,8 @@ def midpoint(points):
 
 
 def build(mmd_text, svg, font_size=None):
-    nodes, clusters, edges, parent, node_links, edge_links = parse_mmd(mmd_text)
+    d = parse_mmd(mmd_text)
+    parent = d.parent
     boxes, routes, labels = layout_from_svg(svg)
     sizes = {"node": font_size, "edge": font_size} if font_size else DEFAULT_SIZES
     style_node, style_cluster, style_edge = (s.format(**sizes) for s in (STYLE_NODE, STYLE_CLUSTER, STYLE_EDGE))
@@ -225,27 +290,33 @@ def build(mmd_text, svg, font_size=None):
 
     def cell(cid, value, style, x, y, w, h):
         ox, oy = origin(cid)
-        c = element(cid, value, style, node_links.get(cid), vertex="1", parent=parent.get(cid, "1"))
+        name = d.node_classes.get(cid)
+        if name:
+            style += d.class_style(name, NODE_KEYS) + d.drawio_styles.get(name, "")
+        c = element(cid, value, style, d.node_links.get(cid), vertex="1", parent=parent.get(cid, "1"))
         ET.SubElement(c, "mxGeometry", x=f"{x - ox:.1f}", y=f"{y - oy:.1f}",
                       width=f"{w:.1f}", height=f"{h:.1f}", **{"as": "geometry"})
 
     # Containers first, outermost before inner, so children find their parent.
     def depth(cid):
-        d = 0
+        n = 0
         while cid in parent:
-            cid, d = parent[cid], d + 1
-        return d
+            cid, n = parent[cid], n + 1
+        return n
 
-    for cid in sorted(clusters, key=depth):
-        cell(cid, clusters[cid], style_cluster, *boxes[cid])
-    for nid, (label, shape) in nodes.items():
+    for cid in sorted(d.clusters, key=depth):
+        cell(cid, d.clusters[cid], style_cluster, *boxes[cid])
+    for nid, (label, shape) in d.nodes.items():
         cell(nid, label, style_node + shape, *boxes[nid])
 
     seen = {}
-    for i, (src, op, label, dst) in enumerate(edges):
+    for i, (src, op, label, dst) in enumerate(d.edges):
         k = seen.get((src, dst), 0)
         seen[(src, dst)] = k + 1
-        c = element(f"e{i}", label, style_edge + ARROWS[op], edge_links.get(label) if label else None,
+        style = style_edge + ARROWS[op]
+        if label in d.edge_classes:
+            style += d.class_style(d.edge_classes[label], LABEL_KEYS)
+        c = element(f"e{i}", label, style, d.edge_links.get(label) if label else None,
                     edge="1", parent="1", source=src, target=dst)
         geo = ET.SubElement(c, "mxGeometry", relative="1", **{"as": "geometry"})
         route = routes.get(f"L_{src}_{dst}_{k}", [])

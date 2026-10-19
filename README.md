@@ -60,16 +60,23 @@ It covers flowcharts, which is what the documents using it need:
   links on edges; to Mermaid the line is a comment, so the source still renders
   there.
 
-A `click` on an unknown node, or a `%% link` naming a label no edge has, fails
-rather than producing a diagram without that link.
+- colours: `classDef name fill:#..,stroke:#..,color:#..,stroke-width:2px,stroke-dasharray:5 5`
+  and `class A,B name`, as in Mermaid. Two comments extend them for draw.io:
+  `%% drawio-style name <draw.io style>` adds raw draw.io style to a class, such as
+  a hatched fill Mermaid cannot draw (`fillStyle=hatch;fillWeight=10;hachureGap=24;`),
+  and `%% edge-class "edge label" name` paints every label with that text in the
+  class's fill (background) and stroke (border).
+
+A `click`, `class` or `%% edge-class` naming something that isn't there, or a class
+without a `classDef`, fails rather than producing a diagram without it.
 
 Anything else fails with `cannot parse: <line>` rather than being dropped
 silently.
 
 ## Limitations
 
-- Styles are fixed to Mermaid's default theme colours; `classDef` and `style`
-  lines are not supported.
+- Unstyled cells use Mermaid's default theme colours. `style` lines (per-node
+  styles without a class) and `linkStyle` are not supported.
 - Node identity in the SVG is read from Mermaid's `flowchart-<id>-<n>` element
   ids, and edges and their labels from `L_<src>_<dst>_<n>`. A Mermaid release
   that changes those naming schemes will need a matching change here.
