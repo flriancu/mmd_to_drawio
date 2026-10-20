@@ -23,7 +23,8 @@ adds raw draw.io style to a class (a hatched fill, say, which Mermaid cannot
 draw), `%% drawio-underlay name <colour>` draws a solid shape of that colour
 beneath the class's nodes, so a hatched fill's gaps show it instead of what is
 behind, and `%% edge-class "edge label" name` paints every label with that text
-in the class's fill and stroke.
+in the class's fill and stroke. A label whose class has a draw.io style or an
+underlay becomes a box of its own on the edge, so it can carry them too.
 
 --font-size lays the diagram out for that font size, in pixels, and writes every
 label at it, so the boxes grow with the text instead of the text spilling out.
@@ -253,7 +254,9 @@ def layout_from_svg(svg):
         if g.get("class", "").startswith("edgeLabel"):
             inner = g.find("s:g[@data-id]", ns)
             if inner is not None:
-                labels[inner.get("data-id")] = translate(g.get("transform"))
+                fo = inner.find("s:foreignObject", ns)
+                size = (float(fo.get("width")), float(fo.get("height"))) if fo is not None else (0.0, 0.0)
+                labels[inner.get("data-id")] = translate(g.get("transform")) + size
     return boxes, routes, labels
 
 
@@ -327,18 +330,45 @@ def build(mmd_text, svg, font_size=None):
     for i, (src, op, label, dst) in enumerate(d.edges):
         k = seen.get((src, dst), 0)
         seen[(src, dst)] = k + 1
+        name = d.edge_classes.get(label)
+        # A label whose class needs a fill draw.io can't give a label (hatching, an
+        # underlay) is drawn as a box attached to the edge instead.
+        boxed = bool(label) and name is not None and (name in d.drawio_styles or name in d.underlays)
         style = style_edge + ARROWS[op]
-        if label in d.edge_classes:
-            style += d.class_style(d.edge_classes[label], LABEL_KEYS)
-        c = element(f"e{i}", label, style, d.edge_links.get(label) if label else None,
+        if name and not boxed:
+            style += d.class_style(name, LABEL_KEYS)
+        link = d.edge_links.get(label) if label else None
+        c = element(f"e{i}", "" if boxed else label, style, None if boxed else link,
                     edge="1", parent="1", source=src, target=dst)
         geo = ET.SubElement(c, "mxGeometry", relative="1", **{"as": "geometry"})
         route = routes.get(f"L_{src}_{dst}_{k}", [])
         place = labels.get(f"L_{src}_{dst}_{k}")
+        # draw.io puts a label halfway along the edge; this moves it to Mermaid's spot.
+        shift = (0.0, 0.0)
         if label and place and len(route) >= 2:
-            # draw.io puts the label halfway along the edge; move it to Mermaid's spot.
             mx, my = midpoint(route)
-            ET.SubElement(geo, "mxPoint", x=f"{place[0] - mx:.1f}", y=f"{place[1] - my:.1f}", **{"as": "offset"})
+            shift = (place[0] - mx, place[1] - my)
+        if boxed:
+            # draw.io's text runs a little wider than Mermaid measured it; the extra
+            # width keeps a label on the lines Mermaid laid it out on.
+            pad_x, pad_y = 12, 6
+            w = (place[2] if place else 8 * len(label)) + 2 * pad_x
+            h = (place[3] if place else 24) + 2 * pad_y
+            box_geo = dict(relative="1", width=f"{w:.1f}", height=f"{h:.1f}")
+            offset = dict(x=f"{shift[0] - w / 2:.1f}", y=f"{shift[1] - h / 2:.1f}")
+            if name in d.underlays:
+                under = ET.SubElement(root, "mxCell", id=f"e{i}-label-underlay", value="",
+                                      style=f"rounded=0;fillColor={d.underlays[name]};strokeColor=none;",
+                                      vertex="1", connectable="0", parent=f"e{i}")
+                ug = ET.SubElement(under, "mxGeometry", **box_geo, **{"as": "geometry"})
+                ET.SubElement(ug, "mxPoint", **offset, **{"as": "offset"})
+            box_style = (f"rounded=0;whiteSpace=wrap;html=1;fontSize={sizes['edge']};"
+                         + d.class_style(name, NODE_KEYS) + d.drawio_styles.get(name, ""))
+            box = element(f"e{i}-label", label, box_style, link, vertex="1", connectable="0", parent=f"e{i}")
+            bg = ET.SubElement(box, "mxGeometry", **box_geo, **{"as": "geometry"})
+            ET.SubElement(bg, "mxPoint", **offset, **{"as": "offset"})
+        elif label and place and len(route) >= 2:
+            ET.SubElement(geo, "mxPoint", x=f"{shift[0]:.1f}", y=f"{shift[1]:.1f}", **{"as": "offset"})
         pts = route[1:-1]
         if pts:
             arr = ET.SubElement(geo, "Array", **{"as": "points"})

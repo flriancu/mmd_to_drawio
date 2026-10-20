@@ -67,7 +67,9 @@ It covers flowcharts, which is what the documents using it need:
   `%% drawio-underlay name #RRGGBB` draws a solid shape of that colour beneath the
   class's nodes, so a hatched fill's gaps show it rather than what is behind; and
   `%% edge-class "edge label" name` paints every label with that text in the
-  class's fill (background) and stroke (border).
+  class's fill (background) and stroke (border). A label whose class also has a
+  `drawio-style` or an underlay becomes a box of its own on the edge, so it can be
+  hatched like a node.
 
 A `click`, `class` or `%% edge-class` naming something that isn't there, or a class
 without a `classDef`, fails rather than producing a diagram without it.
